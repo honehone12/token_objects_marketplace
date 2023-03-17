@@ -19,7 +19,6 @@ module token_objects_marketplace::bids {
 
     struct Bid<phantom TCoin> has store {
         coin: Coin<TCoin>,
-        offer_price: u64,
         expiration_sec: u64 // !!! range
     }
 
@@ -30,12 +29,10 @@ module token_objects_marketplace::bids {
 
     inline fun new_bid<TCoin>(
         coin: Coin<TCoin>,
-        offer_price: u64,
         expiration_sec: u64
     ): Bid<TCoin> {
         Bid{
             coin,
-            offer_price,
             expiration_sec
         }
     }
@@ -97,7 +94,7 @@ module token_objects_marketplace::bids {
         );
 
         let coin = coin::withdraw<TCoin>(bidder, offer_price);
-        let bid = new_bid(coin, offer_price, expiration_sec);
+        let bid = new_bid(coin, expiration_sec);
         vector::push_back(&mut bid_records.key_list, bid_id);
         table_with_length::add(&mut bid_records.bids_table, bid_id, bid);
         bid_id

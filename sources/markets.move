@@ -14,7 +14,7 @@ module token_objects_marketplace::markets {
 
     // !!!
     // needs something like time range config
-    // now + input time = expiration time etc...
+    // now + {fixed time} = expiration time etc...
 
     // !!!
     // there are no way to close one expired without bids
