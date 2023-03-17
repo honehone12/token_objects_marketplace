@@ -9,4 +9,3 @@ TokenObjects = { local = "../../aptos-core/aptos-move/move-examples/token_object
 
 [addresses]
 token_objects_marketplace = "0xcafe"
-#admin = "0xcafe"

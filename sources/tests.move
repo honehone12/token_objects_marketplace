@@ -15,7 +15,7 @@ module token_objects_marketplace::tests {
 
     struct ListMe has key {}
 
-    public fun setup_test(
+    fun setup_test(
         lister: &signer, 
         bidder_1: &signer, 
         bidder_2: &signer, 
@@ -43,7 +43,7 @@ module token_objects_marketplace::tests {
         coin::transfer<FakeMoney>(framework, @0x456, 100);
     }
 
-    public fun create_test_object(account: &signer): Object<ListMe> {
+    fun create_test_object(account: &signer): Object<ListMe> {
         _ = collection::create_untracked_collection(
             account,
             utf8(b"collection description"),
@@ -154,6 +154,7 @@ module token_objects_marketplace::tests {
             1, 3,
             false
         );
+
         timestamp::update_global_time_for_test(2000_000);
         markets::bid<ListMe, FakeMoney>(
             bidder_1, lister_addr, obj_addr,
@@ -177,5 +178,52 @@ module token_objects_marketplace::tests {
         assert!(coin::balance<FakeMoney>(lister_addr) == 116, 2);
         assert!(coin::balance<FakeMoney>(market_addr) == 102, 3);
         assert!(coin::balance<FakeMoney>(creator_addr) == 102, 4);
+    }
+
+    #[test(
+        lister = @0x123, 
+        bidder_1 = @0x234, 
+        bidder_2 = @0x235, 
+        market_host = @0x345,
+        creator = @0x456, 
+        framework = @0x1
+    )]
+    #[expected_failure(abort_code = 524297, location = token_objects_marketplace::listings)]
+    fun test_auction_create_twice(
+        lister: &signer, 
+        bidder_1: &signer, 
+        bidder_2: &signer, 
+        market_host: &signer,
+        creator: &signer, 
+        framework: &signer
+    ) {
+        setup_test(lister, bidder_1, bidder_2, market_host, creator, framework);
+        markets::create_market(market_host, 10, 100);
+        let lister_addr = signer::address_of(lister);
+        let obj = create_test_object(creator);
+        object::transfer(creator, obj, lister_addr);
+        let obj_addr = object::object_address(&obj);
+        
+        markets::start_listing<ListMe, FakeMoney>(
+            lister, @0x345, obj_addr,
+            utf8(b"collection"), utf8(b"name"),
+            vector::empty(), vector::empty(), vector::empty(),
+            false,
+            5,
+            1, 3,
+            false
+        );
+
+        timestamp::update_global_time_for_test(4000_000);
+
+        markets::start_listing<ListMe, FakeMoney>(
+            lister, @0x345, obj_addr,
+            utf8(b"collection"), utf8(b"name"),
+            vector::empty(), vector::empty(), vector::empty(),
+            false,
+            1,
+            5, 7,
+            false
+        );
     }
 }

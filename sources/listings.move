@@ -22,16 +22,17 @@ module token_objects_marketplace::listings {
     const E_LOWER_PRICE: u64 = 6;
     const E_NO_BIDS: u64 = 7;
     const E_EMPTY_COIN: u64 = 8;
+    const E_DUPLICATED_LISTING: u64 = 9;
 
-    struct Listing<phantom TCoin> has store, drop {
+    struct Listing<phantom TCoin> has store {
         object_address: address,
         object_type: TypeInfo,
         object_property: PropertyMap,
 
         min_price: u64,
         is_instant_sale: bool,
-        start_sec: u64,
-        expiration_sec: u64,
+        start_sec: u64, // !!! range
+        expiration_sec: u64, // !!! range
 
         bids_map: SimpleMap<u64, BidID>,
         bid_prices: vector<u64>
@@ -39,6 +40,7 @@ module token_objects_marketplace::listings {
 
     struct ListingRecords<phantom TCoin> has key {
         current_listing_nonce: u64,
+        listed_objects: vector<address>,
         key_list: vector<ListingID>,
         listing_table: TableWithLength<ListingID, Listing<TCoin>> 
     }
@@ -49,6 +51,7 @@ module token_objects_marketplace::listings {
                 owner,
                 ListingRecords<TCoin>{
                     current_listing_nonce: 0,
+                    listed_objects: vector::empty(),
                     key_list: vector::empty(),
                     listing_table: table_with_length::new()
                 }
@@ -100,15 +103,6 @@ module token_objects_marketplace::listings {
         } else {
             *vector::borrow(&listing.bid_prices, len_prices - 1)
         }
-    }
-
-    fun create_listing_id<TCoin>(owner: &signer): ListingID
-    acquires ListingRecords {
-        let owner_addr = signer::address_of(owner);
-        let records = borrow_global_mut<ListingRecords<TCoin>>(owner_addr);
-        let nonce = records.current_listing_nonce; 
-        records.current_listing_nonce = nonce + 1;
-        common::new_listing_id(owner_addr, nonce)
     }
 
     public fun object_address<TCoin>(listing_id: &ListingID): address
@@ -185,15 +179,18 @@ module token_objects_marketplace::listings {
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
         verify_record_exists<TCoin>(listing_address);
-        let records = borrow_global<ListingRecords<TCoin>>(listing_address);
+        let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
         verify_listing_exists<TCoin>(records, listing_id);
         let listing = table_with_length::borrow(&records.listing_table, *listing_id);
         assert!(
             listing.expiration_sec < timestamp::now_seconds(),
             error::invalid_argument(E_OUT_OF_SERVICE_TIME)
         );
+        let (ok, idx) = vector::index_of(&records.listed_objects, &listing.object_address);
+        assert!(ok, error::internal(E_DUPLICATED_LISTING));
         assert!(coin::value(&coins) > 0, error::invalid_argument(E_EMPTY_COIN));
 
+        vector::remove(&mut records.listed_objects, idx);
         let obj = object::address_to_object<T>(listing.object_address);
         object::transfer(listser, obj, bidder_address);
         coin::deposit(listing_address, coins);
@@ -219,6 +216,17 @@ module token_objects_marketplace::listings {
         common::verify_token(obj, collection_name, token_name); // including exists Collection & Token
         let prop = common::into_property_map(property_name, property_value, property_type);
         init_listing_records<TCoin>(owner);
+        let obj_addr = object::object_address(&obj);
+        let owner_addr = signer::address_of(owner);
+        let records = borrow_global_mut<ListingRecords<TCoin>>(owner_addr);
+        assert!(
+            !vector::contains(&records.listed_objects, &obj_addr),
+            error::already_exists(E_DUPLICATED_LISTING) 
+        );
+        
+        let nonce = records.current_listing_nonce; 
+        records.current_listing_nonce = nonce + 1;
+        let id = common::new_listing_id(owner_addr, nonce);
         let listing = new_listing<T, TCoin>(
             owner,
             obj,
@@ -228,10 +236,9 @@ module token_objects_marketplace::listings {
             start_sec,
             expiration_sec
         );
-        let id = create_listing_id<TCoin>(owner);
-        let records = borrow_global_mut<ListingRecords<TCoin>>(signer::address_of(owner));
         table_with_length::add(&mut records.listing_table, id, listing);
         vector::push_back(&mut records.key_list, id);
+        vector::push_back(&mut records.listed_objects, obj_addr);
         id
     }
 
@@ -424,7 +431,7 @@ module token_objects_marketplace::listings {
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
-    fun test_into_listing(lister: &signer, other: &signer, framework: &signer)
+    fun test_into_listing_id(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
         let obj = create_test_object(lister);
@@ -444,7 +451,7 @@ module token_objects_marketplace::listings {
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
     #[expected_failure(abort_code = 393217, location = Self)]
-    fun test_fail_into_listing(lister: &signer, other: &signer, framework: &signer)
+    fun test_fail_into_listing_id(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
         let obj = create_test_object(lister);
@@ -464,7 +471,7 @@ module token_objects_marketplace::listings {
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
     #[expected_failure(abort_code = 393217, location = Self)]
-    fun test_fail_into_listing_2(lister: &signer, other: &signer, framework: &signer)
+    fun test_fail_into_listing_id2(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
         let obj = create_test_object(lister);

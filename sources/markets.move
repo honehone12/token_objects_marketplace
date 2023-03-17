@@ -12,6 +12,13 @@ module token_objects_marketplace::markets {
     use token_objects_marketplace::bids;
     use token_objects_marketplace::common::{Self, Fee};
 
+    // !!!
+    // needs something like time range config
+    // now + input time = expiration time etc...
+
+    // !!!
+    // there are no way to close one expired without bids
+
     const E_ALREADY_DISPLAYED: u64 = 1;
     const E_NO_SUCH_MARKET: u64 = 2;
     const E_NOT_DISPLAYED: u64 = 1;

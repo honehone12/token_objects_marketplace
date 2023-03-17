@@ -20,7 +20,7 @@ module token_objects_marketplace::bids {
     struct Bid<phantom TCoin> has store {
         coin: Coin<TCoin>,
         offer_price: u64,
-        expiration_sec: u64
+        expiration_sec: u64 // !!! range
     }
 
     struct BidRecords<phantom TCoin> has key {
