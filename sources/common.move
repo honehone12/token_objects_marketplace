@@ -83,7 +83,7 @@ module token_objects_marketplace::common {
         }
     }
 
-    public fun calc_fee<TCoin>(
+    public fun calc_fee(
         value: u64,
         fee: &Fee,
     ): u64 {

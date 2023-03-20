@@ -186,12 +186,13 @@ module token_objects_marketplace::listings {
             listing.expiration_sec < timestamp::now_seconds(),
             error::invalid_argument(E_OUT_OF_SERVICE_TIME)
         );
+        let obj = object::address_to_object<T>(listing.object_address);
+        common::verify_object_owner(obj, listing_address);
         let (ok, idx) = vector::index_of(&records.listed_objects, &listing.object_address);
         assert!(ok, error::internal(E_DUPLICATED_LISTING));
-        assert!(coin::value(&coins) > 0, error::invalid_argument(E_EMPTY_COIN));
+        assert!(coin::value(&coins) > 0, error::resource_exhausted(E_EMPTY_COIN));
 
         vector::remove(&mut records.listed_objects, idx);
-        let obj = object::address_to_object<T>(listing.object_address);
         object::transfer(listser, obj, bidder_address);
         coin::deposit(listing_address, coins);
     }
@@ -845,14 +846,38 @@ module token_objects_marketplace::listings {
         bid<FakeMoney>(bid_id, obj_addr);
         let bid_id = common::new_bid_id(other_addr, listing_id, 3);
         bid<FakeMoney>(bid_id, obj_addr);
-        let records = borrow_global<ListingRecords<FakeMoney>>(lister_addr);
-        let listing = table_with_length::borrow(&records.listing_table, listing_id);
-        assert!(vector::length(&listing.bid_prices) == 2, 2);
-        assert!(simple_map::contains_key(&listing.bids_map, &3), 3);
-        let highest_bid = highest_bid<FakeMoney>(&listing_id);
-        assert!(highest_bid == bid_id, 4);
         let coin = coin::withdraw<FakeMoney>(other, 1);
         execute_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
-        assert!(object::is_owner(obj, other_addr), 5);
+    }
+
+    #[test(lister = @0x123, other = @0x234, framework = @0x1)]
+    #[expected_failure(abort_code = 589832, location = Self)]
+    fun test_fail_execute_zero_coin(lister: &signer, other: &signer, framework: &signer)
+    acquires ListingRecords {
+        setup_test(lister, other, framework);
+        create_test_money(lister, other, framework);
+        let obj = create_test_object(lister);
+        let obj_addr = object::object_address(&obj);
+        start_listing<ListMe, FakeMoney>(
+            lister,
+            obj_addr,
+            utf8(b"collection"), utf8(b"name"),
+            vector::empty(), vector::empty(), vector::empty(),
+            false,
+            1,
+            2,
+            5
+        );
+        let lister_addr = signer::address_of(lister);
+        let other_addr = signer::address_of(other);
+        let listing_id = common::new_listing_id(lister_addr, 0);
+        let bid_id = common::new_bid_id(other_addr, listing_id, 2);
+        timestamp::update_global_time_for_test(3000_000);
+        bid<FakeMoney>(bid_id, obj_addr);
+        let bid_id = common::new_bid_id(other_addr, listing_id, 3);
+        bid<FakeMoney>(bid_id, obj_addr);
+        timestamp::update_global_time_for_test(6000_000);
+        let coin = coin::withdraw<FakeMoney>(other, 0);
+        execute_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
     }
 }

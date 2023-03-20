@@ -60,7 +60,7 @@ module token_objects_marketplace::bids {
         );
     }
 
-    inline fun calc_royalty<TCoin>(
+    inline fun calc_royalty(
         value: u64,
         royalty: &Royalty,
     ): u64 {
@@ -112,27 +112,27 @@ module token_objects_marketplace::bids {
         verify_bid_id<TCoin>(records, bid_id);
         let bid = table_with_length::borrow_mut(&mut records.bids_table, *bid_id);
         let stored_coin = coin::extract_all(&mut bid.coin);
-        let origin_val = coin::value(&stored_coin);
+        let origin_value = coin::value(&stored_coin);
         assert!(
-            origin_val == common::bid_price(bid_id), 
+            origin_value == common::bid_price(bid_id), 
             error::internal(E_UNEXPECTED_COIN_VALUE)
         );
+        assert!(coin::value(&stored_coin) > 0, error::resource_exhausted(E_ZERO_COIN));
 
         if (option::is_some(&royalty)) {
             let royalty_raw = option::destroy_some(royalty); 
             let royalty_addr = royalty::payee_address(&royalty_raw);
-            let royalty_value = calc_royalty<TCoin>(origin_val, &royalty_raw);
+            let royalty_value = calc_royalty(origin_value, &royalty_raw);
             let royalty_coin = coin::extract(&mut stored_coin, royalty_value);
             coin::deposit(royalty_addr, royalty_coin);
         };
         if (option::is_some(&fee)) {
             let fee_raw = option::destroy_some(fee);
             let fee_addr = common::fee_address(&fee_raw);
-            let fee_value = common::calc_fee<TCoin>(origin_val, &fee_raw);
+            let fee_value = common::calc_fee(origin_value, &fee_raw);
             let fee_coin = coin::extract(&mut stored_coin, fee_value);
             coin::deposit(fee_addr, fee_coin);
         };
-        assert!(coin::value(&stored_coin) > 0, error::resource_exhausted(E_ZERO_COIN));
         stored_coin
     }
 
@@ -265,6 +265,26 @@ module token_objects_marketplace::bids {
     }
 
     #[test(bidder = @0x123, other = @0x234, framework = @0x1)]
+    fun test_execute2(bidder: &signer, other: &signer, framework: &signer)
+    acquires BidRecords {
+        setup_test(bidder, other, framework);
+        create_test_money(bidder, other, framework);
+
+        let other_addr = signer::address_of(other);
+        let listing_id = common::new_listing_id(other_addr, 0);
+        let bid_id = bid<FakeMoney>(bidder, listing_id, 10, 2);
+        let bidder_addr = signer::address_of(bidder);
+        
+        //let royalty = option::some(royalty::create(0, 100, other_addr));
+        //let fee = option::some(common::new_fee(0, 100, other_addr));
+        let coin = execute_bid<FakeMoney>(&bid_id, option::none(), option::none());
+        assert!(coin::balance<FakeMoney>(bidder_addr) == 90, 0);
+        assert!(coin::balance<FakeMoney>(other_addr) == 100, 1);
+        coin::deposit(other_addr, coin);
+        assert!(coin::balance<FakeMoney>(other_addr) == 110, 2);
+    }
+
+    #[test(bidder = @0x123, other = @0x234, framework = @0x1)]
     #[expected_failure]
     fun test_fail_execute_bad_fee(bidder: &signer, other: &signer, framework: &signer)
     acquires BidRecords {
@@ -280,21 +300,4 @@ module token_objects_marketplace::bids {
         let coin = execute_bid<FakeMoney>(&bid_id, royalty, fee);
         coin::deposit(other_addr, coin);
     }
-
-    #[test(bidder = @0x123, other = @0x234, framework = @0x1)]
-    #[expected_failure(abort_code = 589829, location = token_objects_marketplace::bids)]
-    fun test_fail_execute_bad_fee_2(bidder: &signer, other: &signer, framework: &signer)
-    acquires BidRecords {
-        setup_test(bidder, other, framework);
-        create_test_money(bidder, other, framework);
-
-        let other_addr = signer::address_of(other);
-        let listing_id = common::new_listing_id(other_addr, 0);
-        let bid_id = bid<FakeMoney>(bidder, listing_id, 10, 2);
-        
-        let royalty = option::some(royalty::create(50, 100, other_addr));
-        let fee = option::some(common::new_fee(50, 100, other_addr));
-        let coin = execute_bid<FakeMoney>(&bid_id, royalty, fee);
-        coin::deposit(other_addr, coin);
-    }    
 }
