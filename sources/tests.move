@@ -12,6 +12,7 @@ module token_objects_marketplace::tests {
     use token_objects::collection;
     use token_objects::royalty;
     use token_objects_marketplace::markets;
+    use token_objects_marketplace::bids;
 
     struct ListMe has key {}
 
@@ -47,16 +48,14 @@ module token_objects_marketplace::tests {
         _ = collection::create_untracked_collection(
             account,
             utf8(b"collection description"),
-            collection::create_mutability_config(false, false),
             utf8(b"collection"),
             option::none(),
             utf8(b"collection uri"),
         );
-        let cctor = token::create_token(
+        let cctor = token::create(
             account,
             utf8(b"collection"),
             utf8(b"description"),
-            token::create_mutability_config(false, false, false),
             utf8(b"name"),
             option::some(royalty::create(10, 100, signer::address_of(account))),
             utf8(b"uri")
@@ -97,18 +96,18 @@ module token_objects_marketplace::tests {
             vector::empty(), vector::empty(), vector::empty(),
             true,
             10,
-            1, 3,
+            1, 1 + 86400,
             false
         );
 
-        timestamp::update_global_time_for_test(2000_000);
+        timestamp::update_global_time_for_test(2_000_000);
         markets::bid<ListMe, FakeMoney>(
             bidder_1, lister_addr, obj_addr,
             0,
-            10,
-            3
+            10
         );
 
+        timestamp::update_global_time_for_test(86400_000_000 + 2_000_000);
         assert!(coin::balance<FakeMoney>(bidder_1_addr) == 90, 0);
         markets::close_listing<ListMe, FakeMoney>(lister, market_addr, 0);
         assert!(object::is_owner(obj, bidder_1_addr), 1);
@@ -151,7 +150,7 @@ module token_objects_marketplace::tests {
             vector::empty(), vector::empty(), vector::empty(),
             false,
             1,
-            1, 3,
+            1, 86400 + 1,
             false
         );
 
@@ -159,25 +158,27 @@ module token_objects_marketplace::tests {
         markets::bid<ListMe, FakeMoney>(
             bidder_1, lister_addr, obj_addr,
             0,
-            10,
-            3
+            10
         );
 
         markets::bid<ListMe, FakeMoney>(
             bidder_2, lister_addr, obj_addr,
             0,
-            20,
-            3
+            20
         );
 
         assert!(coin::balance<FakeMoney>(bidder_1_addr) == 90, 0);
-        assert!(coin::balance<FakeMoney>(bidder_2_addr) == 80, 0);
-        timestamp::update_global_time_for_test(4000_000);
+        assert!(coin::balance<FakeMoney>(bidder_2_addr) == 80, 1);
+        timestamp::update_global_time_for_test(86400_000_000 + 86400_000_000);
         markets::close_listing<ListMe, FakeMoney>(lister, market_addr, 0);
-        assert!(object::is_owner(obj, bidder_2_addr), 1);
-        assert!(coin::balance<FakeMoney>(lister_addr) == 116, 2);
-        assert!(coin::balance<FakeMoney>(market_addr) == 102, 3);
-        assert!(coin::balance<FakeMoney>(creator_addr) == 102, 4);
+        assert!(object::is_owner(obj, bidder_2_addr), 2);
+        assert!(coin::balance<FakeMoney>(lister_addr) == 116, 3);
+        assert!(coin::balance<FakeMoney>(market_addr) == 102, 4);
+        assert!(coin::balance<FakeMoney>(creator_addr) == 102, 5);
+
+        timestamp::update_global_time_for_test(1000_000 + 86400_000_000 + 86400_000_000);
+        bids::withdraw_from_expired<FakeMoney>(bidder_1);
+        assert!(coin::balance<FakeMoney>(bidder_1_addr) == 100, 6);
     }
 
     #[test(
@@ -210,7 +211,7 @@ module token_objects_marketplace::tests {
             vector::empty(), vector::empty(), vector::empty(),
             false,
             5,
-            1, 3,
+            1, 86400 + 1,
             false
         );
 
@@ -222,7 +223,7 @@ module token_objects_marketplace::tests {
             vector::empty(), vector::empty(), vector::empty(),
             false,
             1,
-            5, 7,
+            5, 86400 + 5,
             false
         );
     }

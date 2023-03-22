@@ -3,10 +3,10 @@ module token_objects_marketplace::listings {
     use std::error;
     use std::vector;
     use std::string::String;
-    use aptos_std::timestamp;
     use aptos_std::table_with_length::{Self, TableWithLength};
     use aptos_std::simple_map::{Self, SimpleMap};
     use aptos_std::type_info::{Self, TypeInfo};
+    use aptos_framework::timestamp;
     use aptos_framework::object::{Self, Object};
     use aptos_framework::coin::{Self, Coin};
     use aptos_token::property_map::PropertyMap;
@@ -23,6 +23,7 @@ module token_objects_marketplace::listings {
     const E_NO_BIDS: u64 = 7;
     const E_EMPTY_COIN: u64 = 8;
     const E_DUPLICATED_LISTING: u64 = 9;
+    const E_ALREADY_SOLD: u64 = 10;
 
     struct Listing<phantom TCoin> has store {
         object_address: address,
@@ -31,8 +32,8 @@ module token_objects_marketplace::listings {
 
         min_price: u64,
         is_instant_sale: bool,
-        start_sec: u64, // !!! range
-        expiration_sec: u64, // !!! range
+        start_sec: u64,
+        expiration_sec: u64,
 
         bids_map: SimpleMap<u64, BidID>,
         bid_prices: vector<u64>
@@ -59,17 +60,6 @@ module token_objects_marketplace::listings {
         }
     }
 
-    inline fun verify_record_exists<TCoin>(addr: address) {
-        assert!(exists<ListingRecords<TCoin>>(addr), error::not_found(E_NO_SUCH_LISTING));
-    }
-
-    inline fun verify_listing_exists<TCoin>(records: &ListingRecords<TCoin>, listing_id: &ListingID) {
-        assert!(
-            table_with_length::contains(&records.listing_table, *listing_id), 
-            error::not_found(E_NO_SUCH_LISTING)
-        );
-    }
-
     inline fun new_listing<T: key, TCoin>(
         owner: &signer,
         obj: Object<T>,
@@ -80,7 +70,6 @@ module token_objects_marketplace::listings {
         expiration_sec: u64
     ): Listing<TCoin> {
         common::verify_object_owner<T>(obj, signer::address_of(owner));
-        common::verify_time(timestamp::now_seconds(), start_sec);
         common::verify_time(start_sec, expiration_sec);
         common::verify_price(min_price);
         Listing{
@@ -108,93 +97,41 @@ module token_objects_marketplace::listings {
     public fun object_address<TCoin>(listing_id: &ListingID): address
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
-        verify_record_exists<TCoin>(listing_address);
         let records = borrow_global<ListingRecords<TCoin>>(listing_address);
-        verify_listing_exists<TCoin>(records, listing_id);
         let listing = table_with_length::borrow(&records.listing_table, *listing_id);
         listing.object_address
     }
 
-    public fun highest_bid<TCoin>(listing_id: &ListingID): BidID
+    public fun expiration_seconds<TCoin>(listing_id: &ListingID): u64
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
-        verify_record_exists<TCoin>(listing_address);
         let records = borrow_global<ListingRecords<TCoin>>(listing_address);
-        verify_listing_exists<TCoin>(records, listing_id);
         let listing = table_with_length::borrow(&records.listing_table, *listing_id);
-        assert!(vector::length(&listing.bid_prices) > 0, error::unavailable(E_NO_BIDS));
-        let highest_price = highest_price<TCoin>(listing);
-        *simple_map::borrow(&listing.bids_map, &highest_price)
+        listing.expiration_sec
+    }
+
+    public fun highest_bid<TCoin>(listing_id: &ListingID): (bool, BidID)
+    acquires ListingRecords {
+        let listing_address = common::listing_address(listing_id);
+        let records = borrow_global<ListingRecords<TCoin>>(listing_address);
+        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        if (vector::length(&listing.bid_prices) > 0) {
+            let highest_price = highest_price<TCoin>(listing);
+            (true, *simple_map::borrow(&listing.bids_map, &highest_price))
+        } else {
+            (false, common::empty_bid_id())
+        }
     }
 
     public fun into_listing_id<TCoin>(addr: address, nonce: u64): ListingID 
     acquires ListingRecords {
-        verify_record_exists<TCoin>(addr);
         let records = borrow_global<ListingRecords<TCoin>>(addr);
         let id = common::new_listing_id(addr, nonce);
-        verify_listing_exists<TCoin>(records, &id);
+        assert!(
+            table_with_length::contains(&records.listing_table, id), 
+            error::not_found(E_NO_SUCH_LISTING)
+        );
         id
-    }
-
-    public(friend) fun bid<TCoin>(bid_id: BidID, object_address: address)
-    acquires ListingRecords {
-        let listing_id = common::listing_id(&bid_id);
-        let listing_address = common::listing_address(&listing_id);
-        verify_record_exists<TCoin>(listing_address);
-        let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
-        verify_listing_exists<TCoin>(records, &listing_id);
-        let listing = table_with_length::borrow_mut(&mut records.listing_table, listing_id);
-        let now_sec = timestamp::now_seconds();
-        assert!(
-            listing_address != common::bidder(&bid_id),
-            error::invalid_argument(E_ALREADY_OWNER) 
-        );
-        assert!(
-            object_address == listing.object_address, 
-            error::invalid_argument(E_INVALID_OBJECT_ADDRESS)
-        );
-        assert!(
-            listing.start_sec < now_sec && now_sec < listing.expiration_sec,
-            error::invalid_argument(E_OUT_OF_SERVICE_TIME)
-        );
-
-        let price = common::bid_price(&bid_id);
-        if (listing.is_instant_sale) {
-            assert!(price >= listing.min_price, error::invalid_argument(E_LOWER_PRICE));
-            let now = timestamp::now_seconds();
-            listing.expiration_sec = now - 1;
-        } else {
-            assert!(price > highest_price(listing), error::invalid_argument(E_LOWER_PRICE));
-        };
-        simple_map::add(&mut listing.bids_map, price, bid_id);
-        vector::push_back(&mut listing.bid_prices, price);
-    }
-
-    public(friend) fun execute_listing<T: key, TCoin>(
-        listser: &signer,
-        coins: Coin<TCoin>, 
-        bidder_address: address,
-        listing_id: &ListingID
-    )
-    acquires ListingRecords {
-        let listing_address = common::listing_address(listing_id);
-        verify_record_exists<TCoin>(listing_address);
-        let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
-        verify_listing_exists<TCoin>(records, listing_id);
-        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
-        assert!(
-            listing.expiration_sec < timestamp::now_seconds(),
-            error::invalid_argument(E_OUT_OF_SERVICE_TIME)
-        );
-        let obj = object::address_to_object<T>(listing.object_address);
-        common::verify_object_owner(obj, listing_address);
-        let (ok, idx) = vector::index_of(&records.listed_objects, &listing.object_address);
-        assert!(ok, error::internal(E_DUPLICATED_LISTING));
-        assert!(coin::value(&coins) > 0, error::resource_exhausted(E_EMPTY_COIN));
-
-        vector::remove(&mut records.listed_objects, idx);
-        object::transfer(listser, obj, bidder_address);
-        coin::deposit(listing_address, coins);
     }
 
     public(friend) fun start_listing<T: key, TCoin>(
@@ -243,6 +180,78 @@ module token_objects_marketplace::listings {
         id
     }
 
+    public(friend) fun bid<TCoin>(bid_id: BidID, object_address: address)
+    acquires ListingRecords {
+        let listing_id = common::listing_id(&bid_id);
+        let listing_address = common::listing_address(&listing_id);
+        let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
+        let listing = table_with_length::borrow_mut(&mut records.listing_table, listing_id);
+        let now_sec = timestamp::now_seconds();
+        assert!(
+            listing_address != common::bidder(&bid_id),
+            error::invalid_argument(E_ALREADY_OWNER) 
+        );
+        assert!(
+            object_address == listing.object_address, 
+            error::invalid_argument(E_INVALID_OBJECT_ADDRESS)
+        );
+        assert!(
+            listing.start_sec < now_sec && now_sec < listing.expiration_sec,
+            error::invalid_argument(E_OUT_OF_SERVICE_TIME)
+        );
+
+        let price = common::bid_price(&bid_id);
+        if (listing.is_instant_sale) {
+            assert!(price >= listing.min_price, error::invalid_argument(E_LOWER_PRICE));
+            assert!(vector::length(&listing.bid_prices) == 0, error::unavailable(E_ALREADY_SOLD));
+        } else {
+            assert!(price > highest_price(listing), error::invalid_argument(E_LOWER_PRICE));
+        };
+        simple_map::add(&mut listing.bids_map, price, bid_id);
+        vector::push_back(&mut listing.bid_prices, price);
+    }
+
+    public(friend) fun complete_listing<T: key, TCoin>(
+        listser: &signer,
+        coins: Coin<TCoin>, 
+        bidder_address: address,
+        listing_id: &ListingID
+    )
+    acquires ListingRecords {
+        let listing_address = common::listing_address(listing_id);
+        let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
+        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        assert!(
+            listing.expiration_sec < timestamp::now_seconds(),
+            error::invalid_argument(E_OUT_OF_SERVICE_TIME)
+        );
+        let obj = object::address_to_object<T>(listing.object_address);
+        common::verify_object_owner(obj, listing_address);
+        let (ok, idx) = vector::index_of(&records.listed_objects, &listing.object_address);
+        assert!(ok, error::internal(E_DUPLICATED_LISTING));
+        assert!(coin::value(&coins) > 0, error::resource_exhausted(E_EMPTY_COIN));
+
+        vector::remove(&mut records.listed_objects, idx);
+        object::transfer(listser, obj, bidder_address);
+        coin::deposit(listing_address, coins);
+    }
+
+    public(friend) fun cancel_listing<T: key, TCoin>(listing_id: &ListingID)
+    acquires ListingRecords {
+        let listing_address = common::listing_address(listing_id);
+        let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
+        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        assert!(
+            listing.expiration_sec < timestamp::now_seconds(),
+            error::invalid_argument(E_OUT_OF_SERVICE_TIME)
+        );
+        let obj = object::address_to_object<T>(listing.object_address);
+        common::verify_object_owner(obj, listing_address);
+        let (ok, idx) = vector::index_of(&records.listed_objects, &listing.object_address);
+        assert!(ok, error::internal(E_DUPLICATED_LISTING));
+        vector::remove(&mut records.listed_objects, idx);
+    }
+
     #[test_only]
     use aptos_framework::account;
     #[test_only]
@@ -281,16 +290,14 @@ module token_objects_marketplace::listings {
         _ = collection::create_untracked_collection(
             account,
             utf8(b"collection description"),
-            collection::create_mutability_config(false, false),
             utf8(b"collection"),
             option::none(),
             utf8(b"collection uri"),
         );
-        let cctor = token::create_token(
+        let cctor = token::create(
             account,
             utf8(b"collection"),
             utf8(b"description"),
-            token::create_mutability_config(false, false, false),
             utf8(b"name"),
             option::none(),
             utf8(b"uri")
@@ -341,26 +348,7 @@ module token_objects_marketplace::listings {
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
     #[expected_failure(abort_code = 65537, location = token_objects_marketplace::common)]
-    fun test_fail_start_listing_start_at_past(lister: &signer, other: &signer, framework: &signer)
-    acquires ListingRecords {
-        setup_test(lister, other, framework);
-        timestamp::update_global_time_for_test(2000_000);
-        let obj = create_test_object(lister);
-        start_listing<ListMe, FakeMoney>(
-            lister,
-            object::object_address(&obj),
-            utf8(b"collection"), utf8(b"name"),
-            vector::empty(), vector::empty(), vector::empty(),
-            false,
-            1,
-            2,
-            5
-        );
-    }
-
-    #[test(lister = @0x123, other = @0x234, framework = @0x1)]
-    #[expected_failure(abort_code = 65537, location = token_objects_marketplace::common)]
-    fun test_fail_start_listing_start_end_past(lister: &signer, other: &signer, framework: &signer)
+    fun test_fail_start_listing_end_before_start(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
         timestamp::update_global_time_for_test(2000_000);
@@ -471,7 +459,7 @@ module token_objects_marketplace::listings {
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
-    #[expected_failure(abort_code = 393217, location = Self)]
+    #[expected_failure]
     fun test_fail_into_listing_id2(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
@@ -725,7 +713,7 @@ module token_objects_marketplace::listings {
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
-    #[expected_failure(abort_code = 65540, location = Self)]
+    #[expected_failure(abort_code = 851978, location = Self)]
     fun test_fail_bid_twice_instant_sale(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
@@ -779,12 +767,12 @@ module token_objects_marketplace::listings {
         let listing = table_with_length::borrow(&records.listing_table, listing_id);
         assert!(vector::length(&listing.bid_prices) == 2, 2);
         assert!(simple_map::contains_key(&listing.bids_map, &3), 3);
-        let highest_bid = highest_bid<FakeMoney>(&listing_id);
+        let (_, highest_bid) = highest_bid<FakeMoney>(&listing_id);
         assert!(highest_bid == bid_id, 4);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
-    fun test_execute(lister: &signer, other: &signer, framework: &signer)
+    fun test_complete(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
         create_test_money(lister, other, framework);
@@ -812,17 +800,17 @@ module token_objects_marketplace::listings {
         let listing = table_with_length::borrow(&records.listing_table, listing_id);
         assert!(vector::length(&listing.bid_prices) == 2, 2);
         assert!(simple_map::contains_key(&listing.bids_map, &3), 3);
-        let highest_bid = highest_bid<FakeMoney>(&listing_id);
+        let (_, highest_bid) = highest_bid<FakeMoney>(&listing_id);
         assert!(highest_bid == bid_id, 4);
         let coin = coin::withdraw<FakeMoney>(other, 1);
         timestamp::update_global_time_for_test(6000_000);
-        execute_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
+        complete_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
         assert!(object::is_owner(obj, other_addr), 5);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
     #[expected_failure(abort_code = 65540, location = Self)]
-    fun test_fail_execute_before_expired(lister: &signer, other: &signer, framework: &signer)
+    fun test_fail_complete_before_expired(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
         create_test_money(lister, other, framework);
@@ -847,12 +835,12 @@ module token_objects_marketplace::listings {
         let bid_id = common::new_bid_id(other_addr, listing_id, 3);
         bid<FakeMoney>(bid_id, obj_addr);
         let coin = coin::withdraw<FakeMoney>(other, 1);
-        execute_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
+        complete_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
     #[expected_failure(abort_code = 589832, location = Self)]
-    fun test_fail_execute_zero_coin(lister: &signer, other: &signer, framework: &signer)
+    fun test_fail_complete_zero_coin(lister: &signer, other: &signer, framework: &signer)
     acquires ListingRecords {
         setup_test(lister, other, framework);
         create_test_money(lister, other, framework);
@@ -878,6 +866,6 @@ module token_objects_marketplace::listings {
         bid<FakeMoney>(bid_id, obj_addr);
         timestamp::update_global_time_for_test(6000_000);
         let coin = coin::withdraw<FakeMoney>(other, 0);
-        execute_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
+        complete_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
     }
 }

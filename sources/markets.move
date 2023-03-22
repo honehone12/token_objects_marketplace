@@ -6,22 +6,24 @@ module token_objects_marketplace::markets {
     use std::option::{Self, Option};
     use aptos_std::simple_map::{Self, SimpleMap};
     use aptos_std::table_with_length::{Self, TableWithLength};
+    use aptos_framework::timestamp;
     use aptos_framework::object;
     use token_objects::royalty;
     use token_objects_marketplace::listings;
     use token_objects_marketplace::bids;
     use token_objects_marketplace::common::{Self, Fee};
 
-    // !!!
-    // needs something like time range config
-    // now + {fixed time} = expiration time etc...
-
-    // !!!
-    // there are no way to close one expired without bids
+    // withdraw after auction
 
     const E_ALREADY_DISPLAYED: u64 = 1;
     const E_NO_SUCH_MARKET: u64 = 2;
-    const E_NOT_DISPLAYED: u64 = 1;
+    const E_NOT_DISPLAYED: u64 = 3;
+    const E_INVALID_TIME_RANGE: u64 = 4;
+
+    const MIN_EXPIRATION_SEC: u64 = 86400; // a day
+    const MAX_EXPIRATION_SEC: u64 = 2592000; // 30 days
+    const MAX_WAIT_UNTIL_START: u64 = 2592000; // 30 days
+    const MAX_WAIT_UNTIL_EXECUTION: u64 = 86400; // a day
 
     struct Market has key {
         fee: Option<Fee>,
@@ -50,10 +52,6 @@ module token_objects_marketplace::markets {
             token_name,
             prefer_objects_matching
         }
-    }
-
-    inline fun verify_market_address(market_address: address) {
-        assert!(exists<Market>(market_address), error::not_found(E_NO_SUCH_MARKET));
     }
 
     fun list_to_catalog(
@@ -131,27 +129,6 @@ module token_objects_marketplace::markets {
         )
     }
 
-    public entry fun close_listing<T: key, TCoin>(
-        lister: &signer,
-        market_address: address, 
-        listing_nonce: u64
-    )
-    acquires Market {
-        verify_market_address(market_address);
-        let lister_addr = signer::address_of(lister);
-        let listing_id = listings::into_listing_id<TCoin>(lister_addr, listing_nonce);
-        let highest_bid = listings::highest_bid<TCoin>(&listing_id);
-        let bidder = common::bidder(&highest_bid);
-        let obj_addr = listings::object_address<TCoin>(&listing_id);
-        let obj = object::address_to_object<T>(obj_addr);
-        let royalty = royalty::get(obj);
-        let market = borrow_global<Market>(market_address);
-        let fee = market.fee;
-        let coin = bids::execute_bid<TCoin>(&highest_bid, royalty, fee);
-        listings::execute_listing<T, TCoin>(lister, coin, bidder, &listing_id);
-        remove_from_catalog(market_address, lister_addr, listing_nonce);
-    }
-
     public entry fun start_listing<T: key, TCoin>(
         owner: &signer,
         market_address: address,
@@ -168,7 +145,17 @@ module token_objects_marketplace::markets {
         prefer_objects_matching: bool
     )
     acquires Market {
-        verify_market_address(market_address);
+        let now = timestamp::now_seconds();
+        assert!(
+            now <= start_sec && start_sec < now + MAX_WAIT_UNTIL_START,
+            error::invalid_argument(E_INVALID_TIME_RANGE)
+        );
+        assert!(
+            start_sec + MIN_EXPIRATION_SEC <= expiration_sec && 
+            expiration_sec < start_sec + MAX_EXPIRATION_SEC,
+            error::invalid_argument(E_INVALID_TIME_RANGE)
+        );
+
         let listing = listings::start_listing<T, TCoin>(
             owner,
             object_address,
@@ -197,17 +184,46 @@ module token_objects_marketplace::markets {
         lister: address,
         object_address: address,
         listing_nonce: u64,
-        offer_price: u64,
-        expiration_sec: u64
+        offer_price: u64
     ) {
         let listing_id = listings::into_listing_id<TCoin>(lister, listing_nonce);
+        let listing_expiration_sec = listings::expiration_seconds<TCoin>(&listing_id);
         let bid_id = bids::bid<TCoin>(
             bidder,
             listing_id,
             offer_price,
-            expiration_sec
+            listing_expiration_sec + MAX_WAIT_UNTIL_EXECUTION
         );
         listings::bid<TCoin>(bid_id, object_address);
+    }
+
+    public entry fun close_listing<T: key, TCoin>(
+        lister: &signer,
+        market_address: address, 
+        listing_nonce: u64
+    )
+    acquires Market {
+        let lister_addr = signer::address_of(lister);
+        let listing_id = listings::into_listing_id<TCoin>(lister_addr, listing_nonce);
+        let listing_expiration_sec = listings::expiration_seconds<TCoin>(&listing_id);
+
+        
+
+
+        let (ok, highest_bid) = listings::highest_bid<TCoin>(&listing_id);
+        if (ok && timestamp::now_seconds() < listing_expiration_sec + MAX_WAIT_UNTIL_EXECUTION) {
+            let bidder = common::bidder(&highest_bid);
+            let obj_addr = listings::object_address<TCoin>(&listing_id);
+            let obj = object::address_to_object<T>(obj_addr);
+            let royalty = royalty::get(obj);
+            let market = borrow_global<Market>(market_address);
+            let fee = market.fee;
+            let coin = bids::execute_bid<TCoin>(&highest_bid, royalty, fee);
+            listings::complete_listing<T, TCoin>(lister, coin, bidder, &listing_id);
+            remove_from_catalog(market_address, lister_addr, listing_nonce);
+        } else {
+            listings::cancel_listing<T, TCoin>(&listing_id);
+        }
     }
 
     #[test_only]

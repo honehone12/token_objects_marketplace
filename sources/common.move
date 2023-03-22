@@ -1,5 +1,4 @@
 module token_objects_marketplace::common {
-    use std::signer;
     use std::error;
     use std::vector;
     use std::string::String;
@@ -30,6 +29,17 @@ module token_objects_marketplace::common {
             bidder,
             listing_id,
             bid_price
+        }
+    }
+
+    public fun empty_bid_id(): BidID {
+        BidID{
+            bidder: @0x0,
+            listing_id: ListingID{
+                listing_address: @0x0,
+                nonce: 0
+            },
+            bid_price: 0
         }
     }
 
@@ -96,13 +106,6 @@ module token_objects_marketplace::common {
 
     public fun fee_address(fee: &Fee): address {
         fee.fee_address
-    }
-
-    public fun verify_admin(account: &signer, admin: address) {
-        assert!(
-            signer::address_of(account) == admin,
-            error::permission_denied(E_NOT_ADMIN)
-        );
     }
 
     public fun verify_time(start: u64, end: u64) {

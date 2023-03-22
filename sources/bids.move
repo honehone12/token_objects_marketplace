@@ -19,7 +19,7 @@ module token_objects_marketplace::bids {
 
     struct Bid<phantom TCoin> has store {
         coin: Coin<TCoin>,
-        expiration_sec: u64 // !!! range
+        expiration_sec: u64
     }
 
     struct BidRecords<phantom TCoin> has key {
@@ -47,17 +47,6 @@ module token_objects_marketplace::bids {
                 }
             )
         }
-    }
-
-    inline fun verify_address<TCoin>(addr: address) {
-        assert!(exists<BidRecords<TCoin>>(addr), error::not_found(E_NO_BID_RECORDS));
-    }
-
-    inline fun verify_bid_id<TCoin>(bid_records: &BidRecords<TCoin>, bid_id: &BidID) {
-        assert!(
-            table_with_length::contains(&bid_records.bids_table, *bid_id), 
-            error::not_found(E_NO_SUCH_BID_ID)
-        );
     }
 
     inline fun calc_royalty(
@@ -107,9 +96,7 @@ module token_objects_marketplace::bids {
     ): Coin<TCoin>
     acquires BidRecords {
         let bidder_addr = common::bidder(bid_id);
-        verify_address<TCoin>(bidder_addr);
         let records = borrow_global_mut<BidRecords<TCoin>>(bidder_addr);
-        verify_bid_id<TCoin>(records, bid_id);
         let bid = table_with_length::borrow_mut(&mut records.bids_table, *bid_id);
         let stored_coin = coin::extract_all(&mut bid.coin);
         let origin_value = coin::value(&stored_coin);
@@ -134,6 +121,29 @@ module token_objects_marketplace::bids {
             coin::deposit(fee_addr, fee_coin);
         };
         stored_coin
+    }
+
+    public entry fun withdraw_from_expired<TCoin>(bidder: &signer)
+    acquires BidRecords {
+        let bidder_address = signer::address_of(bidder);
+        let records = borrow_global_mut<BidRecords<TCoin>>(bidder_address);
+
+        let coin = coin::zero<TCoin>();
+        let now = timestamp::now_seconds();
+        let i = 0;
+        let len = vector::length(&records.key_list);
+        while (i < len) {
+            let key = vector::borrow(&records.key_list, i);
+            let bid = table_with_length::borrow_mut(&mut records.bids_table, *key);
+            if (
+                bid.expiration_sec <= now &&
+                coin::value(&bid.coin) > 0
+            ) {
+                coin::merge(&mut coin, coin::extract_all(&mut bid.coin))
+            };
+            i = i + 1;  
+        };
+        coin::deposit(bidder_address, coin);
     }
 
     #[test_only]
