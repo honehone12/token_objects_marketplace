@@ -8,9 +8,9 @@ module token_objects_marketplace::tests {
     use aptos_framework::account;
     use aptos_framework::object::{Self, Object};
     use aptos_framework::coin::{Self, FakeMoney};
-    use token_objects::token;
-    use token_objects::collection;
-    use token_objects::royalty;
+    use aptos_token_objects::token;
+    use aptos_token_objects::collection;
+    use aptos_token_objects::royalty;
     use token_objects_marketplace::markets;
     use token_objects_marketplace::bids;
 

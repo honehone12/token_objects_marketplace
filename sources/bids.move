@@ -6,7 +6,7 @@ module token_objects_marketplace::bids {
     use aptos_std::table_with_length::{Self, TableWithLength};
     use aptos_framework::coin::{Self, Coin};
     use aptos_framework::timestamp;
-    use token_objects::royalty::{Self, Royalty};
+    use aptos_token_objects::royalty::{Self, Royalty};
     use token_objects_marketplace::common::{Self, Fee, BidID, ListingID};
 
     friend token_objects_marketplace::markets;

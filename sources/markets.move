@@ -8,12 +8,10 @@ module token_objects_marketplace::markets {
     use aptos_std::table_with_length::{Self, TableWithLength};
     use aptos_framework::timestamp;
     use aptos_framework::object;
-    use token_objects::royalty;
+    use aptos_token_objects::royalty;
     use token_objects_marketplace::listings;
     use token_objects_marketplace::bids;
     use token_objects_marketplace::common::{Self, Fee};
-
-    // withdraw after auction
 
     const E_ALREADY_DISPLAYED: u64 = 1;
     const E_NO_SUCH_MARKET: u64 = 2;
@@ -39,18 +37,18 @@ module token_objects_marketplace::markets {
     struct Sale has store, drop {
         collection_name: String,
         token_name: String,
-        prefer_objects_matching: bool
+        receive_direct_objects_offer: bool
     }
 
     inline fun new_sale(
         collection_name: String, 
         token_name: String,
-        prefer_objects_matching: bool
+        receive_direct_objects_offer: bool
     ): Sale {
         Sale{
             collection_name,
             token_name,
-            prefer_objects_matching
+            receive_direct_objects_offer
         }
     }
 
@@ -60,7 +58,7 @@ module token_objects_marketplace::markets {
         listing_nonce: u64,
         collection_name: String,
         token_name: String,
-        prefer_objects_matching: bool
+        receive_direct_objects_offer: bool
     )
     acquires Market {
         let market = borrow_global_mut<Market>(market_address);
@@ -81,7 +79,7 @@ module token_objects_marketplace::markets {
             !simple_map::contains_key(&catalog.item_map, &listing_nonce), 
             error::already_exists(E_ALREADY_DISPLAYED)
         );
-        let sale = new_sale(collection_name, token_name, prefer_objects_matching);
+        let sale = new_sale(collection_name, token_name, receive_direct_objects_offer);
         simple_map::add(&mut catalog.item_map, listing_nonce, sale);
         vector::push_back(&mut catalog.key_list, listing_nonce);
     }
@@ -142,7 +140,7 @@ module token_objects_marketplace::markets {
         min_price: u64,
         start_sec: u64,
         expiration_sec: u64,
-        prefer_objects_matching: bool
+        receive_direct_objects_offer: bool
     )
     acquires Market {
         let now = timestamp::now_seconds();
@@ -175,7 +173,7 @@ module token_objects_marketplace::markets {
             common::listing_nonce(&listing),
             collection_name,
             token_name,
-            prefer_objects_matching
+            receive_direct_objects_offer
         );
     }
 
@@ -194,7 +192,7 @@ module token_objects_marketplace::markets {
             offer_price,
             listing_expiration_sec + MAX_WAIT_UNTIL_EXECUTION
         );
-        listings::bid<TCoin>(bid_id, object_address);
+        listings::bid<TCoin>(&bid_id, object_address);
     }
 
     public entry fun close_listing<T: key, TCoin>(
@@ -206,9 +204,6 @@ module token_objects_marketplace::markets {
         let lister_addr = signer::address_of(lister);
         let listing_id = listings::into_listing_id<TCoin>(lister_addr, listing_nonce);
         let listing_expiration_sec = listings::expiration_seconds<TCoin>(&listing_id);
-
-        
-
 
         let (ok, highest_bid) = listings::highest_bid<TCoin>(&listing_id);
         if (ok && timestamp::now_seconds() < listing_expiration_sec + MAX_WAIT_UNTIL_EXECUTION) {

@@ -14,6 +14,10 @@ module token_objects_marketplace::listings {
 
     friend token_objects_marketplace::markets;
 
+    // !!!
+    // it is simply possible that object is transfered while being listed
+    // bidder has to wait for about a month until withdraw in this case
+
     const E_NO_SUCH_LISTING: u64 = 1;
     const E_INVALID_OBJECT_ADDRESS: u64 = 2;
     const E_ALREADY_OWNER: u64 = 3;
@@ -24,6 +28,8 @@ module token_objects_marketplace::listings {
     const E_EMPTY_COIN: u64 = 8;
     const E_DUPLICATED_LISTING: u64 = 9;
     const E_ALREADY_SOLD: u64 = 10;
+    const E_CANNOT_OFFER_TO_AUCTION: u64 = 11;
+    const E_CANNOT_OFFER_FROM_AUCTION: u64 = 12;
 
     struct Listing<phantom TCoin> has store {
         object_address: address,
@@ -42,8 +48,8 @@ module token_objects_marketplace::listings {
     struct ListingRecords<phantom TCoin> has key {
         current_listing_nonce: u64,
         listed_objects: vector<address>,
-        key_list: vector<ListingID>,
-        listing_table: TableWithLength<ListingID, Listing<TCoin>> 
+        key_list: vector<u64>,
+        listing_table: TableWithLength<u64, Listing<TCoin>> 
     }
 
     inline fun init_listing_records<TCoin>(owner: &signer) {
@@ -98,7 +104,7 @@ module token_objects_marketplace::listings {
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
         let records = borrow_global<ListingRecords<TCoin>>(listing_address);
-        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, common::listing_nonce(listing_id));
         listing.object_address
     }
 
@@ -106,7 +112,7 @@ module token_objects_marketplace::listings {
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
         let records = borrow_global<ListingRecords<TCoin>>(listing_address);
-        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, common::listing_nonce(listing_id));
         listing.expiration_sec
     }
 
@@ -114,7 +120,7 @@ module token_objects_marketplace::listings {
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
         let records = borrow_global<ListingRecords<TCoin>>(listing_address);
-        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, common::listing_nonce(listing_id));
         if (vector::length(&listing.bid_prices) > 0) {
             let highest_price = highest_price<TCoin>(listing);
             (true, *simple_map::borrow(&listing.bids_map, &highest_price))
@@ -126,12 +132,11 @@ module token_objects_marketplace::listings {
     public fun into_listing_id<TCoin>(addr: address, nonce: u64): ListingID 
     acquires ListingRecords {
         let records = borrow_global<ListingRecords<TCoin>>(addr);
-        let id = common::new_listing_id(addr, nonce);
         assert!(
-            table_with_length::contains(&records.listing_table, id), 
+            table_with_length::contains(&records.listing_table, nonce), 
             error::not_found(E_NO_SUCH_LISTING)
         );
-        id
+        common::new_listing_id(addr, nonce)
     }
 
     public(friend) fun start_listing<T: key, TCoin>(
@@ -164,7 +169,6 @@ module token_objects_marketplace::listings {
         
         let nonce = records.current_listing_nonce; 
         records.current_listing_nonce = nonce + 1;
-        let id = common::new_listing_id(owner_addr, nonce);
         let listing = new_listing<T, TCoin>(
             owner,
             obj,
@@ -174,21 +178,21 @@ module token_objects_marketplace::listings {
             start_sec,
             expiration_sec
         );
-        table_with_length::add(&mut records.listing_table, id, listing);
-        vector::push_back(&mut records.key_list, id);
+        table_with_length::add(&mut records.listing_table, nonce, listing);
+        vector::push_back(&mut records.key_list, nonce);
         vector::push_back(&mut records.listed_objects, obj_addr);
-        id
+        common::new_listing_id(owner_addr, nonce)
     }
 
-    public(friend) fun bid<TCoin>(bid_id: BidID, object_address: address)
+    public(friend) fun bid<TCoin>(bid_id: &BidID, object_address: address)
     acquires ListingRecords {
-        let listing_id = common::listing_id(&bid_id);
+        let listing_id = common::listing_id(bid_id);
         let listing_address = common::listing_address(&listing_id);
         let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
-        let listing = table_with_length::borrow_mut(&mut records.listing_table, listing_id);
+        let listing = table_with_length::borrow_mut(&mut records.listing_table, common::listing_nonce(&listing_id));
         let now_sec = timestamp::now_seconds();
         assert!(
-            listing_address != common::bidder(&bid_id),
+            listing_address != common::bidder(bid_id),
             error::invalid_argument(E_ALREADY_OWNER) 
         );
         assert!(
@@ -200,14 +204,14 @@ module token_objects_marketplace::listings {
             error::invalid_argument(E_OUT_OF_SERVICE_TIME)
         );
 
-        let price = common::bid_price(&bid_id);
+        let price = common::bid_price(bid_id);
         if (listing.is_instant_sale) {
             assert!(price >= listing.min_price, error::invalid_argument(E_LOWER_PRICE));
             assert!(vector::length(&listing.bid_prices) == 0, error::unavailable(E_ALREADY_SOLD));
         } else {
             assert!(price > highest_price(listing), error::invalid_argument(E_LOWER_PRICE));
         };
-        simple_map::add(&mut listing.bids_map, price, bid_id);
+        simple_map::add(&mut listing.bids_map, price, *bid_id);
         vector::push_back(&mut listing.bid_prices, price);
     }
 
@@ -220,7 +224,7 @@ module token_objects_marketplace::listings {
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
         let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
-        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, common::listing_nonce(listing_id));
         assert!(
             listing.expiration_sec < timestamp::now_seconds(),
             error::invalid_argument(E_OUT_OF_SERVICE_TIME)
@@ -240,7 +244,7 @@ module token_objects_marketplace::listings {
     acquires ListingRecords {
         let listing_address = common::listing_address(listing_id);
         let records = borrow_global_mut<ListingRecords<TCoin>>(listing_address);
-        let listing = table_with_length::borrow(&records.listing_table, *listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, common::listing_nonce(listing_id));
         assert!(
             listing.expiration_sec < timestamp::now_seconds(),
             error::invalid_argument(E_OUT_OF_SERVICE_TIME)
@@ -257,9 +261,9 @@ module token_objects_marketplace::listings {
     #[test_only]
     use aptos_framework::coin::FakeMoney;
     #[test_only]
-    use token_objects::token;
+    use aptos_token_objects::token;
     #[test_only]
-    use token_objects::collection;
+    use aptos_token_objects::collection;
     #[test_only]
     use std::string::utf8;
     #[test_only]
@@ -311,7 +315,7 @@ module token_objects_marketplace::listings {
     acquires ListingRecords {
         setup_test(lister, other, framework);
         let obj = create_test_object(lister);
-        let listing_id = start_listing<ListMe, FakeMoney>(
+        start_listing<ListMe, FakeMoney>(
             lister,
             object::object_address(&obj),
             utf8(b"collection"), utf8(b"name"),
@@ -324,7 +328,7 @@ module token_objects_marketplace::listings {
         let lister_addr = signer::address_of(lister);
         let records = borrow_global<ListingRecords<FakeMoney>>(lister_addr);
         assert!(vector::length(&records.key_list) == 1, 0);
-        assert!(table_with_length::contains(&records.listing_table, listing_id), 1);
+        assert!(table_with_length::contains(&records.listing_table, 0), 1);
         assert!(table_with_length::length(&records.listing_table) == 1, 2);
     }
 
@@ -498,9 +502,9 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let records = borrow_global<ListingRecords<FakeMoney>>(lister_addr);
-        let listing = table_with_length::borrow(&records.listing_table, listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, 0);
         assert!(vector::length(&listing.bid_prices) == 1, 2);
         assert!(simple_map::contains_key(&listing.bids_map, &2), 3);
     }
@@ -526,9 +530,9 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 1);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let records = borrow_global<ListingRecords<FakeMoney>>(lister_addr);
-        let listing = table_with_length::borrow(&records.listing_table, listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, 0);
         assert!(vector::length(&listing.bid_prices) == 1, 2);
         assert!(simple_map::contains_key(&listing.bids_map, &1), 3);
     }
@@ -555,7 +559,7 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 1);
-        bid<FakeMoney>(bid_id, @0xcafe);
+        bid<FakeMoney>(&bid_id, @0xcafe);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
@@ -579,7 +583,7 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(lister_addr, listing_id, 1);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
@@ -604,7 +608,7 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 1);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
@@ -629,7 +633,7 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 1);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
@@ -654,7 +658,7 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
@@ -679,7 +683,7 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(6000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
@@ -703,11 +707,11 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let bid_id = common::new_bid_id(other_addr, listing_id, 3);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let records = borrow_global<ListingRecords<FakeMoney>>(lister_addr);
-        let listing = table_with_length::borrow(&records.listing_table, listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, 0);
         assert!(vector::length(&listing.bid_prices) == 2, 2);
         assert!(simple_map::contains_key(&listing.bids_map, &3), 3);
     }
@@ -734,9 +738,9 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 1);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
     }
 
     #[test(lister = @0x123, other = @0x234, framework = @0x1)]
@@ -760,11 +764,11 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let bid_id = common::new_bid_id(other_addr, listing_id, 3);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let records = borrow_global<ListingRecords<FakeMoney>>(lister_addr);
-        let listing = table_with_length::borrow(&records.listing_table, listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, 0);
         assert!(vector::length(&listing.bid_prices) == 2, 2);
         assert!(simple_map::contains_key(&listing.bids_map, &3), 3);
         let (_, highest_bid) = highest_bid<FakeMoney>(&listing_id);
@@ -793,11 +797,11 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let bid_id = common::new_bid_id(other_addr, listing_id, 3);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let records = borrow_global<ListingRecords<FakeMoney>>(lister_addr);
-        let listing = table_with_length::borrow(&records.listing_table, listing_id);
+        let listing = table_with_length::borrow(&records.listing_table, 0);
         assert!(vector::length(&listing.bid_prices) == 2, 2);
         assert!(simple_map::contains_key(&listing.bids_map, &3), 3);
         let (_, highest_bid) = highest_bid<FakeMoney>(&listing_id);
@@ -831,9 +835,9 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         timestamp::update_global_time_for_test(3000_000);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let bid_id = common::new_bid_id(other_addr, listing_id, 3);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let coin = coin::withdraw<FakeMoney>(other, 1);
         complete_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
     }
@@ -861,9 +865,9 @@ module token_objects_marketplace::listings {
         let listing_id = common::new_listing_id(lister_addr, 0);
         let bid_id = common::new_bid_id(other_addr, listing_id, 2);
         timestamp::update_global_time_for_test(3000_000);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         let bid_id = common::new_bid_id(other_addr, listing_id, 3);
-        bid<FakeMoney>(bid_id, obj_addr);
+        bid<FakeMoney>(&bid_id, obj_addr);
         timestamp::update_global_time_for_test(6000_000);
         let coin = coin::withdraw<FakeMoney>(other, 0);
         complete_listing<ListMe, FakeMoney>(lister, coin, other_addr, &listing_id);
