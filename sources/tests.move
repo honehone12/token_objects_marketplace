@@ -227,4 +227,75 @@ module token_objects_marketplace::tests {
             false
         );
     }
+
+    #[test(
+        lister = @0x123, 
+        bidder_1 = @0x234, 
+        bidder_2 = @0x235, 
+        market_host = @0x345,
+        creator = @0x456, 
+        framework = @0x1
+    )]
+    fun test_auction_crazy_path(
+        lister: &signer, 
+        bidder_1: &signer, 
+        bidder_2: &signer, 
+        market_host: &signer,
+        creator: &signer, 
+        framework: &signer
+    ) {
+        setup_test(lister, bidder_1, bidder_2, market_host, creator, framework);
+        markets::create_market(market_host, 10, 100);
+        let lister_addr = signer::address_of(lister);
+        let market_addr = signer::address_of(market_host);
+        //let bidder_1_addr = signer::address_of(bidder_1);
+        //let bidder_2_addr = signer::address_of(bidder_2);
+        let creator_addr = signer::address_of(creator);
+
+
+        let obj = create_test_object(creator);
+        object::transfer(creator, obj, lister_addr);
+        let obj_addr = object::object_address(&obj);
+        markets::start_listing<ListMe, FakeMoney>(
+            lister, @0x345, obj_addr,
+            utf8(b"collection"), utf8(b"name"),
+            vector::empty(), vector::empty(), vector::empty(),
+            false,
+            1,
+            1, 86400 + 1,
+            false
+        );
+
+        timestamp::update_global_time_for_test(2000_000);
+        markets::bid<ListMe, FakeMoney>(
+            bidder_1, lister_addr, obj_addr,
+            0,
+            10
+        );
+
+        markets::bid<ListMe, FakeMoney>(
+            bidder_2, lister_addr, obj_addr,
+            0,
+            20
+        );
+
+        object::transfer(lister, obj, creator_addr);
+
+        markets::start_listing<ListMe, FakeMoney>(
+            creator, @0x345, obj_addr,
+            utf8(b"collection"), utf8(b"name"),
+            vector::empty(), vector::empty(), vector::empty(),
+            false,
+            2,
+            2, 86400 + 2,
+            false
+        );
+
+        // this listing will never be closed.
+        markets::close_listing<ListMe, FakeMoney>(lister, market_addr, 0);
+
+
+        timestamp::update_global_time_for_test(1000_000 + 86400_000_000 + 86400_000_000);
+        bids::withdraw_from_expired<FakeMoney>(bidder_1);
+    }
 }

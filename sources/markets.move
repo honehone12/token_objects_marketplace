@@ -204,19 +204,20 @@ module token_objects_marketplace::markets {
         let lister_addr = signer::address_of(lister);
         let listing_id = listings::into_listing_id<TCoin>(lister_addr, listing_nonce);
         let listing_expiration_sec = listings::expiration_seconds<TCoin>(&listing_id);
-
         let (ok, highest_bid) = listings::highest_bid<TCoin>(&listing_id);
+        
         if (ok && timestamp::now_seconds() < listing_expiration_sec + MAX_WAIT_UNTIL_EXECUTION) {
-            let bidder = common::bidder(&highest_bid);
             let obj_addr = listings::object_address<TCoin>(&listing_id);
             let obj = object::address_to_object<T>(obj_addr);
+            let bidder = common::bidder(&highest_bid);
             let royalty = royalty::get(obj);
             let market = borrow_global<Market>(market_address);
             let fee = market.fee;
             let coin = bids::execute_bid<TCoin>(&highest_bid, royalty, fee);
-            listings::complete_listing<T, TCoin>(lister, coin, bidder, &listing_id);
             remove_from_catalog(market_address, lister_addr, listing_nonce);
+            listings::complete_listing<T, TCoin>(lister, coin, bidder, &listing_id);
         } else {
+            remove_from_catalog(market_address, lister_addr, listing_nonce);
             listings::cancel_listing<T, TCoin>(&listing_id);
         }
     }

@@ -14,10 +14,6 @@ module token_objects_marketplace::listings {
 
     friend token_objects_marketplace::markets;
 
-    // !!!
-    // it is simply possible that object is transfered while being listed
-    // bidder has to wait for about a month until withdraw in this case
-
     const E_NO_SUCH_LISTING: u64 = 1;
     const E_INVALID_OBJECT_ADDRESS: u64 = 2;
     const E_ALREADY_OWNER: u64 = 3;
